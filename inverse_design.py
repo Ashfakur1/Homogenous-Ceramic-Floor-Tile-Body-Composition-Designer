@@ -357,7 +357,8 @@ def inverse_bayesian_optimization(
         trial_vals.append(obj)
         return obj
 
-    study = optuna.create_study(direction="minimize")
+    sampler = optuna.samplers.TPESampler(seed=42)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
     study.optimize(_objective, n_trials=n_trials, show_progress_bar=False)
 
     # Reconstruct best composition with full bound enforcement
