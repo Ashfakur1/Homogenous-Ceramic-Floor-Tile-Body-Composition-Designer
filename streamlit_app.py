@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 streamlit_app.py
@@ -83,20 +84,22 @@ for req in ["dataset.csv", "metadata.json"]:
         st.error(f"Required file not found: {DATADIR / req}")
         st.stop()
 
-
 @st.cache_data
-def _load_dataset() -> pd.DataFrame:
+def _load_dataset(_mtime: float) -> pd.DataFrame:
     return pd.read_csv(DATADIR / "dataset.csv")
 
-
 @st.cache_data
-def _load_meta() -> dict:
+def _load_meta(_mtime: float) -> dict:
     with open(DATADIR / "metadata.json") as f:
         return json.load(f)
 
-
-dataset = _load_dataset()
-meta = _load_meta()
+# Passing each file's modification time as a cache-key argument means
+# Streamlit automatically reloads the moment generate_dataset.py rewrites
+# dataset.csv / metadata.json -- no manual "Clear cache" or app restart
+# needed. If the file hasn't changed, the mtime argument is identical and
+# the cached result is reused (no wasted re-parsing on every rerun).
+dataset = _load_dataset((DATADIR / "dataset.csv").stat().st_mtime)
+meta = _load_meta((DATADIR / "metadata.json").stat().st_mtime)
 materials = meta["materials"]
 
 # Dataset range from synthetic rows only — consistent with inverse_design.py
@@ -263,7 +266,6 @@ tabs = st.tabs([
     "Compare All Methods",
 ])
 
-
 # ── Shared helpers ───────────────────────────────────────────────────────────
 def _table(result: dict) -> pd.DataFrame:
     comp_renamed = {MAT_SHORT.get(m, m): v
@@ -274,7 +276,6 @@ def _table(result: dict) -> pd.DataFrame:
         "Cost (Tk/kg)": result["cost_Tk_per_kg"],
         "CO2 (kg/kg)": result["CO2_kg_per_kg"],
     }])
-
 
 def _comp_bar(result: dict, title: str, color: str):
     comp = result["composition_wtpct"]
@@ -308,7 +309,6 @@ def _comp_bar(result: dict, title: str, color: str):
     plt.tight_layout()
     return fig
 
-
 def _error_bars(result: dict, tgt: dict, title: str, color: str):
     """Absolute prediction error vs. target for each property."""
     errors = {p: abs(result["predicted"][p] - tgt[p]) for p in TARGET_COLS}
@@ -335,7 +335,6 @@ def _error_bars(result: dict, tgt: dict, title: str, color: str):
     ax.set_ylim(0, y_max * 1.30)
     plt.tight_layout()
     return fig
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 1 — Non-Optimised
@@ -731,3 +730,4 @@ with tabs[3]:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
+

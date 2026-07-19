@@ -94,12 +94,10 @@ _FS_LABEL = 13
 _FS_ANNOT = 12
 _DPI      = 300
 
-
 def savefig(fig, stem: str) -> None:
     for ext in ("pdf", "png"):
         fig.savefig(PLOTDIR / f"{stem}.{ext}", dpi=_DPI, bbox_inches="tight")
     plt.close(fig)
-
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 df   = pd.read_csv(DATADIR / "dataset.csv")
@@ -256,8 +254,8 @@ lab_mask_test = np.array([idx in lab_idx_set for idx in test_idx])
 if lab_mask_test.sum() > 0:
     y_tl = y_test[lab_mask_test]
     y_pl = y_pred[lab_mask_test]
-    print("\nExperimental-batch-only metrics (n=8, held-out, R² not reported"
-          " — see Note in module docstring):")
+    print(f"\nExperimental-batch-only metrics (n={int(lab_mask_test.sum())}, held-out, "
+          "R² not reported — see Note in module docstring):")
     units = {"MOR_MPa": "MPa", "WA_pct": "%", "Shrinkage_pct": "%"}
     for i, t in enumerate(TARGET_COLS):
         mae_e  = float(np.mean(np.abs(y_tl[:, i] - y_pl[:, i])))
@@ -364,7 +362,6 @@ print("Saved: parity_plots.pdf / .png")
 print(f"\nComputing PDPs on original-scale composition variables "
       f"(marginalised over synthetic training set, n = {len(X_train)}) …")
 
-
 def compute_pdp(pipeline, X_orig: pd.DataFrame,
                 feature: str, n_grid: int = 60):
     grid = np.linspace(X_orig[feature].min(), X_orig[feature].max(), n_grid)
@@ -374,7 +371,6 @@ def compute_pdp(pipeline, X_orig: pd.DataFrame,
         Xt[feature] = val
         means.append(pipeline.predict(Xt).mean(axis=0))
     return grid, np.array(means)
-
 
 _FS_PDP_SUPTITLE = 26
 _FS_PDP_TITLE    = 24

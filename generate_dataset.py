@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 generate_dataset.py
@@ -91,34 +92,63 @@ PLOTDIR = ROOTDIR / "plots"
 
 KMM2_TO_MPA = 9.80665          # kgf/mm² → MPa  (ISO 13006)
 
-# ── 8 Real Lab Batches ────────────────────────────────────────────────────────
-_LAB_RAW = [
-    {"AG98":16.490,"AG22":3.721,"AG23":14.541,"SodaF":38.544,"PotashF":20.272,
-     "Crushing":2.272,"ETP":2.272,"NaSil":0.933,
-     "MOR_MPa":4.268*KMM2_TO_MPA,"WA_pct":0.035890186*100,"Shrinkage_pct":10.23},
-    {"AG98":16.263,"AG22":2.997,"AG23":13.330,"SodaF":42.827,"PotashF":17.494,
-     "Crushing":3.460,"ETP":2.933,"NaSil":0.697,
-     "MOR_MPa":5.9275*KMM2_TO_MPA,"WA_pct":0.035046535*100,"Shrinkage_pct":11.56},
-    {"AG98":17.224,"AG22":3.055,"AG23":13.049,"SodaF":38.569,"PotashF":20.012,
-     "Crushing":4.008,"ETP":3.377,"NaSil":0.705,
-     "MOR_MPa":6.1935*KMM2_TO_MPA,"WA_pct":0.034149517*100,"Shrinkage_pct":11.32},
-    {"AG98":18.631,"AG22":3.209,"AG23":12.299,"SodaF":40.477,"PotashF":18.641,
-     "Crushing":2.969,"ETP":2.906,"NaSil":0.868,
-     "MOR_MPa":4.7295*KMM2_TO_MPA,"WA_pct":0.034416341*100,"Shrinkage_pct":10.80},
-    {"AG98":18.288,"AG22":3.531,"AG23":11.694,"SodaF":38.474,"PotashF":20.491,
-     "Crushing":3.171,"ETP":3.040,"NaSil":1.311,
-     "MOR_MPa":6.282*KMM2_TO_MPA,"WA_pct":0.037089799*100,"Shrinkage_pct":11.18},
-    {"AG98":16.078,"AG22":3.726,"AG23":13.321,"SodaF":42.473,"PotashF":17.784,
-     "Crushing":3.104,"ETP":2.624,"NaSil":0.889,
-     "MOR_MPa":4.5275*KMM2_TO_MPA,"WA_pct":0.034241008*100,"Shrinkage_pct":10.27},
-    # Corner-point batches — maximum calibration coverage
-    {"AG98":15.000,"AG22":2.500,"AG23":10.000,"SodaF":37.000,"PotashF":15.000,
-     "Crushing":2.000,"ETP":2.000,"NaSil":0.500,
-     "MOR_MPa":6.379*KMM2_TO_MPA,"WA_pct":0.034015332*100,"Shrinkage_pct":11.63},
-    {"AG98":20.000,"AG22":4.000,"AG23":15.000,"SodaF":43.000,"PotashF":22.000,
-     "Crushing":3.500,"ETP":3.100,"NaSil":1.500,
-     "MOR_MPa":5.160*KMM2_TO_MPA,"WA_pct":0.034940565*100,"Shrinkage_pct":10.88},
-]
+# ── Real Lab Batches — loaded from an external, user-editable CSV ─────────────
+# This is the ONLY place raw laboratory data enters the whole pipeline.
+# To register a NEW physical test batch: open data/lab_batches_raw.csv,
+# add one row with the same columns, save, and re-run this script. The
+# synthetic dataset, Ridge coefficients, LOO-CV, and every downstream
+# script (models, feature importance, inverse design, reliability
+# analysis) will regenerate consistently with the updated batches —
+# nothing else needs to change.
+LAB_BATCHES_FILE = ROOTDIR / "lab_batches_raw.csv"
+
+def _load_lab_batches(path: Path) -> list:
+    """
+    Load real laboratory calibration batches from a CSV file.
+
+    Required columns
+    -----------------
+    AG98, AG22, AG23, SodaF, PotashF, Crushing, ETP, NaSil
+        Raw composition inputs (wt%, need not already sum to 100 —
+        they are normalised to Sigma = 100 further below).
+    MOR_kgf_mm2
+        Flexural strength as read directly off the tester, kgf/mm2.
+    WA_fraction
+        Water absorption as a fraction (e.g. 0.0359, not 3.59).
+    Shrinkage_pct
+        Fired linear shrinkage, %.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Lab batches file not found: {path}\n"
+            "Create it with columns: AG98,AG22,AG23,SodaF,PotashF,Crushing,"
+            "ETP,NaSil,MOR_kgf_mm2,WA_fraction,Shrinkage_pct"
+        )
+    raw = pd.read_csv(path)
+    required = ["AG98", "AG22", "AG23", "SodaF", "PotashF", "Crushing", "ETP",
+                "NaSil", "MOR_kgf_mm2", "WA_fraction", "Shrinkage_pct"]
+    missing = [c for c in required if c not in raw.columns]
+    if missing:
+        raise ValueError(f"{path.name} is missing required columns: {missing}")
+    if len(raw) < 4:
+        raise ValueError(
+            f"{path.name} has only {len(raw)} batch(es) - at least 4 are "
+            "needed for the Ridge / physics-prior fit to be meaningful."
+        )
+    batches = []
+    for _, r in raw.iterrows():
+        batches.append({
+            "AG98": float(r.AG98), "AG22": float(r.AG22), "AG23": float(r.AG23),
+            "SodaF": float(r.SodaF), "PotashF": float(r.PotashF),
+            "Crushing": float(r.Crushing), "ETP": float(r.ETP),
+            "NaSil": float(r.NaSil),
+            "MOR_MPa": float(r.MOR_kgf_mm2) * KMM2_TO_MPA,
+            "WA_pct": float(r.WA_fraction) * 100.0,
+            "Shrinkage_pct": float(r.Shrinkage_pct),
+        })
+    return batches
+
+_LAB_RAW = _load_lab_batches(LAB_BATCHES_FILE)
 
 MATS = ["AG98","AG22","AG23","SodaF","PotashF","Crushing","ETP","NaSil"]
 MAT_LABELS = {
@@ -239,7 +269,6 @@ def _fit_ridge_coefficients(alpha: float = 0.1,
                 float(fitted["MOR_MPa"][i]))
             for i, m in enumerate(MATS)}
 
-
 def _apply_physics_priors(coeffs: dict) -> dict:
     """Enforce ceramic-sintering sign constraints on Ridge coefficients."""
     SIGN   = {"AG98":(+1,-1,+1),"AG22":(+1,-1,+1),"AG23":(+1,-1,+1),
@@ -265,7 +294,6 @@ def _apply_physics_priors(coeffs: dict) -> dict:
         out[m] = tuple(new)
     return out
 
-
 PHYSICS_COEFF = _apply_physics_priors(_fit_ridge_coefficients())
 
 _RANGE     = np.array([BOUNDS[m][1] - BOUNDS[m][0] for m in MATS])
@@ -275,11 +303,9 @@ _D_REF     = float(np.median([
     for i in range(len(_LAB_RAW)) for j in range(i+1, len(_LAB_RAW))
 ]))
 
-
 def _dist(comp: np.ndarray, k: int = 3) -> float:
     d = np.linalg.norm(_LAB_XNORM - comp / _RANGE, axis=1)
     return float(np.sort(d)[:k].mean())
-
 
 def _physics_pred(cd: dict) -> dict:
     """
@@ -320,7 +346,6 @@ def _physics_pred(cd: dict) -> dict:
 
     return p
 
-
 def _sample_comps(n: int) -> np.ndarray:
     """Rejection-sample on the simplex: all 8 materials within BOUNDS, Σ = 100."""
     free   = ["AG98","AG22","AG23","PotashF","Crushing","ETP","NaSil"]
@@ -335,7 +360,6 @@ def _sample_comps(n: int) -> np.ndarray:
             c = dict(zip(free, v)); c["SodaF"] = s
             out.append([c[m] for m in MATS])
     return np.array(out)
-
 
 def build_dataset(n_synthetic: int = 1000) -> pd.DataFrame:
     noise_base = {t: (lab_df[t].max() - lab_df[t].min()) * 0.04 for t in TGTS}
@@ -376,7 +400,6 @@ def build_dataset(n_synthetic: int = 1000) -> pd.DataFrame:
             + list(PROC.keys()) + ["cost_Tk_per_kg", "CO2_kg_per_kg"])
     df = pd.DataFrame(rows)
     return df[[c for c in cols if c in df.columns]]
-
 
 # ── Surrogate fidelity: Leave-One-Out cross-validation on 8 lab batches ───────
 def validate_physics(df: pd.DataFrame) -> bool:
@@ -457,7 +480,6 @@ def validate_physics(df: pd.DataFrame) -> bool:
                     t, mae, r_obs, pct, status)
     return all_pass
 
-
 # ── Save outputs ──────────────────────────────────────────────────────────────
 def save(df: pd.DataFrame) -> None:
     OUTDIR.mkdir(parents=True, exist_ok=True)
@@ -477,16 +499,16 @@ def save(df: pd.DataFrame) -> None:
         "n_synthetic": int((df.source == "synthetic").sum()),
         "generation_method": (
             "Physics-informed non-linear surrogate. "
-            "Linear terms: Ridge regression (λ=0.1) on 8 lab batches "
+            f"Linear terms: Ridge regression (λ=0.1) on {len(_LAB_RAW)} lab batches "
             "+ ceramic sintering sign priors "
             "(Hoerl & Kennard 1970; Reed 1995). "
             "Non-linear terms: Clay×Feldspar interaction + AG98 quadratic, "
-            "calibrated to minimise RMSE on 8 laboratory batches "
+            f"calibrated to minimise RMSE on {len(_LAB_RAW)} laboratory batches "
             "(Carty & Senapati 1998 DOI:10.1111/j.1151-2916.1998.tb02439.x)."
         ),
         "noise_model": "heteroscedastic — σ(d) = σ_base·(1 + d/d_ref); σ_base = 4% of observed range",
         "validation_method": (
-            "Leave-One-Out cross-validation on 8 laboratory batches "
+            f"Leave-One-Out cross-validation on {len(_LAB_RAW)} laboratory batches "
             "(Ridge coefficients refit per fold to prevent leakage); "
             "threshold 25% of observed range per target"
         ),
@@ -506,7 +528,6 @@ def save(df: pd.DataFrame) -> None:
                 int((df.source == "synthetic").sum()),
                 int((df.source == "lab_batch").sum()))
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # FIGURES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -517,12 +538,10 @@ _FS_LABEL  = 13
 _FS_ANNOT  = 12
 _DPI       = 300
 
-
 def _savefig(fig, stem: str) -> None:
     for ext in ("pdf", "png"):
         fig.savefig(PLOTDIR / f"{stem}.{ext}", dpi=_DPI, bbox_inches="tight")
     plt.close(fig)
-
 
 def plot_distributions(df: pd.DataFrame) -> None:
     comp_cols  = [f"{m}_wtpct" for m in MATS]
@@ -560,7 +579,6 @@ def plot_distributions(df: pd.DataFrame) -> None:
     _savefig(fig, "all_distributions")
     logger.info("Saved: all_distributions.pdf / .png")
 
-
 def plot_source_stripplot(df: pd.DataFrame) -> None:
     colors  = {"synthetic": "#2196F3", "lab_batch": "#E53935"}
     markers = {"synthetic": "o",        "lab_batch": "*"}
@@ -597,7 +615,7 @@ def plot_source_stripplot(df: pd.DataFrame) -> None:
 
         ax.set_xticks([0, 1])
         ax.set_xticklabels(
-            ["Synthetic\n(n = 1,000)", "Experimental\n(n = 8)"],
+            ["Synthetic\n(n = 1,000)", f"Experimental\n(n = {len(_LAB_RAW)})"],
             fontsize=_FS_TICK
         )
         ax.set_ylabel(TGT_LABELS[t], fontsize=_FS_AX)
@@ -616,7 +634,6 @@ def plot_source_stripplot(df: pd.DataFrame) -> None:
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     _savefig(fig, "source_comparison_stripplot")
     logger.info("Saved: source_comparison_stripplot.pdf / .png")
-
 
 def plot_composition_correlation(df: pd.DataFrame) -> None:
     comp_cols = [f"{m}_wtpct" for m in MATS]
@@ -645,7 +662,6 @@ def plot_composition_correlation(df: pd.DataFrame) -> None:
     _savefig(fig, "composition_correlation")
     logger.info("Saved: composition_correlation.pdf / .png")
 
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     OUTDIR.mkdir(parents=True, exist_ok=True)
@@ -655,7 +671,8 @@ def main() -> None:
     logger.info("[1/4] Sampling compositions …")
     df = build_dataset(n_synthetic=1000)
 
-    logger.info("[2/4] Surrogate fidelity — LOO-CV on 8 laboratory batches …")
+    logger.info("[2/4] Surrogate fidelity — LOO-CV on %d laboratory batches …",
+                len(_LAB_RAW))
     validate_physics(df)
 
     logger.info("[3/4] Saving outputs …")
@@ -671,7 +688,6 @@ def main() -> None:
                     t, df[t].min(), df[t].max(), df[t].mean(),
                     df[t].std() / df[t].mean() * 100)
     logger.info("Done.")
-
 
 if __name__ == "__main__":
     main()
