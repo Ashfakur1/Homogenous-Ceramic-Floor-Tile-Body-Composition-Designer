@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 generate_dataset.py
@@ -69,7 +68,8 @@ VALIDATION
   coefficient estimation (true LOO-CV, not a centroid-sensitivity check).
 """
 
-import json, logging, math, warnings
+import hashlib, json, logging, math, warnings
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -149,6 +149,15 @@ def _load_lab_batches(path: Path) -> list:
     return batches
 
 _LAB_RAW = _load_lab_batches(LAB_BATCHES_FILE)
+
+# ── Data provenance fingerprint ────────────────────────────────────────────────
+# A short hash of the raw lab-batch CSV, stamped onto every figure this script
+# (and downstream scripts fed by data/dataset.csv) produces. If the CSV is
+# edited and the pipeline is re-run, every figure gets a NEW stamp, so a stale
+# figure sitting next to updated tables/text is immediately visually obvious
+# (mismatched stamps) instead of silently slipping through review.
+DATA_HASH = hashlib.md5(LAB_BATCHES_FILE.read_bytes()).hexdigest()[:8]
+GENERATED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 MATS = ["AG98","AG22","AG23","SodaF","PotashF","Crushing","ETP","NaSil"]
 MAT_LABELS = {
@@ -520,6 +529,8 @@ def save(df: pd.DataFrame) -> None:
         "ag98_quadratic_coefficients": AG98_QUAD_COEFF,
         "lab_composition_means": LAB_MEAN_COMP,
         "lab_property_means":    LAB_MEAN_PROPS,
+        "data_hash":    DATA_HASH,
+        "generated_at": GENERATED_AT,
     }
     with open(OUTDIR / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -538,7 +549,16 @@ _FS_LABEL  = 13
 _FS_ANNOT  = 12
 _DPI       = 300
 
+def _stamp(fig) -> None:
+    """Small footer identifying the exact data version this figure was
+    rendered from. Prevents a regenerated CSV / dataset.csv from silently
+    leaving old, un-matching figures behind."""
+    fig.text(0.995, 0.002, f"data:{DATA_HASH}  generated:{GENERATED_AT}",
+              ha="right", va="bottom", fontsize=6, color="0.6",
+              family="monospace")
+
 def _savefig(fig, stem: str) -> None:
+    _stamp(fig)
     for ext in ("pdf", "png"):
         fig.savefig(PLOTDIR / f"{stem}.{ext}", dpi=_DPI, bbox_inches="tight")
     plt.close(fig)

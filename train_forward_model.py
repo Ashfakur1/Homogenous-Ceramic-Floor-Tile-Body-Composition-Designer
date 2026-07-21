@@ -55,6 +55,7 @@ NOTE — Experimental-batch performance metrics
 """
 
 import json, math, warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -94,15 +95,29 @@ _FS_LABEL = 13
 _FS_ANNOT = 12
 _DPI      = 300
 
-def savefig(fig, stem: str) -> None:
-    for ext in ("pdf", "png"):
-        fig.savefig(PLOTDIR / f"{stem}.{ext}", dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
-
 # ── Load data ─────────────────────────────────────────────────────────────────
 df   = pd.read_csv(DATADIR / "dataset.csv")
 with open(DATADIR / "metadata.json") as f:
     meta = json.load(f)
+
+# Data-provenance stamp — carried over from generate_dataset.py so every
+# figure in this script is tied to the SAME raw-data version as the figures
+# produced upstream. If dataset.csv is regenerated from an updated CSV but
+# this script is run against a stale copy (or vice versa), the stamps will
+# visibly disagree instead of the mismatch hiding in the numbers alone.
+DATA_HASH    = meta.get("data_hash", "unknown")
+GENERATED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+def _stamp(fig) -> None:
+    fig.text(0.995, 0.002, f"data:{DATA_HASH}  generated:{GENERATED_AT}",
+              ha="right", va="bottom", fontsize=6, color="0.6",
+              family="monospace")
+
+def savefig(fig, stem: str) -> None:
+    _stamp(fig)
+    for ext in ("pdf", "png"):
+        fig.savefig(PLOTDIR / f"{stem}.{ext}", dpi=_DPI, bbox_inches="tight")
+    plt.close(fig)
 
 materials   = meta["materials"]
 TARGET_COLS = ["MOR_MPa", "WA_pct", "Shrinkage_pct"]
