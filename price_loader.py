@@ -2,47 +2,6 @@
 """
 price_loader.py
 Dynamic raw-material price / CO2-factor loader.
-
-ARCHITECTURE (why this file exists)
-------------------------------------
-The forward (prediction) model learns Composition -> Properties. It has
-NOTHING to do with raw-material price. Prices change every month (sometimes
-every batch); properties given a fixed composition do not. So price/CO2 must
-NOT live inside the training dataset or the model — they must live in an
-external, independently-updatable database that the OPTIMIZER reads at
-run time.
-
-This module is that external database. It scans a folder of dated CSV
-files (one snapshot per update) and always loads the most recent one, e.g.:
-
-    data/cost/17_April_2026_Cost.csv
-    data/cost/20_March_2026_Cost.csv
-    data/co2/19_April_2026_CO2.csv
-    data/co2/01_Jan_2026_CO2.csv
-
-Old files are NOT deleted — they are kept as an audit trail / price history.
-Whoever updates the price just drops a new dated CSV into the folder; no
-code change, no retraining, nothing else to touch.
-
-CSV SCHEMA
-----------
-Cost file   : columns -> Material, Price_Tk_per_kg [, Effective_Date]
-CO2 file    : columns -> Material, CO2_kg_per_kg    [, Effective_Date]
-
-The optional Effective_Date column (inside the file) is cross-checked
-against the date encoded in the filename as a redundant sanity check;
-if they disagree, a warning is raised but the filename date always wins
-for "which file is latest" purposes (the file the user actually saved
-is the one they intend to use "as of now").
-
-USAGE
------
-    from price_loader import load_price_table
-
-    cost_dict, cost_info = load_price_table(
-        folder="data/cost", keyword="Cost", value_col="Price_Tk_per_kg",
-        materials=materials, fallback=fallback_cost_dict,
-    )
 """
 
 from __future__ import annotations
@@ -55,9 +14,6 @@ from typing import Optional
 
 import pandas as pd
 
-# ── Filename date formats we try to parse, in order ────────────────────────
-# Supports things like "17_April_2026_Cost.csv", "2026-04-17_Cost.csv",
-# "17-04-2026_Cost.csv", "17_Apr_2026_Cost.csv".
 _DATE_TOKEN_RE = re.compile(
     r"(\d{1,2}[_\-][A-Za-z]{3,9}[_\-]\d{4}|\d{4}[_\-]\d{1,2}[_\-]\d{1,2}|\d{1,2}[_\-]\d{1,2}[_\-]\d{4})"
 )
@@ -70,11 +26,6 @@ _DATE_FORMATS = [
 
 
 def _parse_date_from_filename(filename: str) -> Optional[datetime]:
-    """
-    Extract a date from a filename such as '17_April_2026_Cost.csv'.
-    Returns None (with a warning) if no recognisable date token is found,
-    in which case the caller should fall back to file-modified-time.
-    """
     match = _DATE_TOKEN_RE.search(filename)
     if not match:
         return None
@@ -88,11 +39,6 @@ def _parse_date_from_filename(filename: str) -> Optional[datetime]:
 
 
 def _resolve_file_date(path: Path) -> datetime:
-    """
-    Best-effort date resolution for a single file:
-    1) Parse date encoded in the filename (preferred, explicit, auditable).
-    2) Fall back to the file's last-modified time on disk, with a warning.
-    """
     dt = _parse_date_from_filename(path.name)
     if dt is not None:
         return dt
@@ -105,12 +51,6 @@ def _resolve_file_date(path: Path) -> datetime:
 
 
 def find_latest_file(folder: Path, keyword: str) -> Optional[Path]:
-    """
-    Scan `folder` for files whose name contains `keyword` (case-insensitive,
-    e.g. 'Cost' or 'CO2') and return the path of the most recent one,
-    determined by the date encoded in the filename (fallback: mtime).
-    Returns None if the folder doesn't exist or no matching file is found.
-    """
     folder = Path(folder)
     if not folder.exists():
         return None
@@ -136,20 +76,6 @@ def load_price_table(
     material_col: str = "Material",
     date_col: str = "Effective_Date",
 ) -> tuple[dict, dict]:
-    """
-    Load the latest dated CSV in `folder` matching `keyword` and return
-    (values_dict, info_dict).
-
-    values_dict : {material: float value}, one entry per material.
-                  Materials missing from the CSV fall back to `fallback`
-                  (or 0.0 if no fallback given) with a warning.
-    info_dict   : {"file": <path or None>, "as_of": <datetime or None>,
-                   "source": "file" | "fallback"}
-
-    This function performs NO retraining and touches NOTHING about the
-    prediction model — it is purely a runtime data source for the
-    optimizer's objective function.
-    """
     fallback = fallback or {}
     latest = find_latest_file(folder, keyword)
 
@@ -169,7 +95,6 @@ def load_price_table(
         )
     table = dict(zip(df[material_col].astype(str), df[value_col].astype(float)))
 
-    # Redundant internal-date vs filename-date cross-check (robustness) — see [note]
     filename_date = _resolve_file_date(latest)
     if date_col in df.columns and not df[date_col].isna().all():
         try:

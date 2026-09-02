@@ -31,7 +31,7 @@ MODEL LOADING
   reloading the joblib model on every Streamlit rerun, which would
   otherwise add ~1-2 s latency to every widget interaction.
 
-PRICE / CO2 ARCHITECTURE (new in this version)
+PRICE / CO2 ARCHITECTURE
   Raw-material prices and CO2 factors are NOT baked into the model or the
   training dataset. They live in dated CSV files under data/cost/ and
   data/co2/ (see price_loader.py) and are reloaded on demand via
@@ -243,10 +243,12 @@ with c2:
         step=0.01, format="%.2f",
         help=(
             "Water absorption as a percentage (not fraction). "
-            "Dataset range (3.40-4.08%) corresponds to ISO 13006 "
-            "Class BIIa (semi-vitreous floor tile: WA 3-6%). "
-            "ISO 13006 Class BIb (WA 0.5-3%) and BIa (WA <= 0.5%) "
-            "lie outside the calibrated composition space."
+            f"Dataset range ({WA_min:.2f}-{WA_max:.2f}%) reflects "
+            "whatever the current lab_batches_raw.csv contains — "
+            "check ISO 13006 WA class boundaries (BIa <=0.5%, "
+            "BIb 0.5-3%, BIIa 3-6%) against this range before "
+            "quoting a class in the manuscript; it is not hardcoded "
+            "here and can shift when new batches are added."
         ),
     )
 with c3:
