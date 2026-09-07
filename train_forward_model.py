@@ -391,10 +391,10 @@ for j, arm in enumerate(["real_only", "real_plus_synthetic"]):
           label=arm_labels[arm], color=arm_colors[arm], edgecolor="white")
 ax.set_xticks(xpos)
 ax.set_xticklabels([TGT_LABELS[t] for t in TARGET_COLS], fontsize=_FS_TICK)
-ax.set_ylabel("RMSE on lab_holdout (native units)", fontsize=_FS_AX)
+ax.set_ylabel("RMSE (Target-Specific Units)", fontsize=_FS_AX)
 ax.set_title(
-    f"Does Synthetic Augmentation Help? ({best_name}, "
-    f"n={len(holdout_idx)} independent real batches)",
+    f"Effect of Synthetic Data Augmentation on Forward-Model Accuracy\n"
+    f"({best_name}, n = {len(holdout_idx)} Independent Laboratory Batches)",
     fontsize=_FS_TITLE, fontweight="bold", pad=14
 )
 ax.legend(fontsize=_FS_LABEL)
