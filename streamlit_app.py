@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 streamlit_app.py
@@ -40,6 +39,28 @@ PRICE / CO2 ARCHITECTURE
   "Bayesian Optimisation" tabs always use the latest price/CO2 snapshot
   without any retraining. The currently-loaded price/CO2 file names and
   dates are shown in the sidebar for transparency.
+
+TARGET RANGE / PROCESS PARAMETERS — SINGLE SOURCE OF TRUTH (IMPORTANT)
+  The number-input bounds for MOR/WA/Shrinkage below are read via
+  inverse_design.get_property_ranges(), NOT recomputed locally from
+  dataset.csv. inverse_design.py's Methods 1-2 search synthetic AND real
+  calibration (lab_batch) rows (see its module docstring); if this app
+  computed its own range from a different row subset, the UI's displayed
+  min/max could silently drift out of sync with what clamp_targets()
+  actually enforces internally. Likewise, process-parameter values shown
+  in the sidebar and the batch counts in the page caption are read from
+  metadata.json (proc_defaults, n_lab_calibration, n_lab_holdout,
+  n_synthetic) rather than hardcoded, so they always match whatever
+  generate_dataset.py most recently produced.
+
+MEASURED vs. PREDICTED PROPERTIES (IMPORTANT)
+  inverse_design.py's result dicts now include "property_source"
+  ("measured" or "predicted") and "is_verified_batch" (bool). Methods 1-2
+  can return an ACTUAL fabricated lab_batch recipe when one is close to
+  the target, in which case its real measured properties are shown
+  instead of a model estimate. This app surfaces that distinction
+  directly in the UI (a green confirmation banner) rather than silently
+  presenting every result as if it were an equally-uncertain prediction.
 """
 
 import json
@@ -53,12 +74,14 @@ import streamlit as st
 
 from inverse_design import (
     TARGET_COLS,
+    FORWARD_MODEL_FILE,
     clamp_targets,
     inverse_non_optimized,
     inverse_optimized,
     inverse_bayesian_optimization,
     refresh_prices,
     get_price_info,
+    get_property_ranges,
     TGT_LABELS,
     MAT_SHORT,
 )
@@ -101,12 +124,32 @@ def _load_meta(_mtime: float) -> dict:
 dataset = _load_dataset((DATADIR / "dataset.csv").stat().st_mtime)
 meta = _load_meta((DATADIR / "metadata.json").stat().st_mtime)
 materials = meta["materials"]
+proc_defaults = meta.get("proc_defaults", {})
 
-# Dataset range from synthetic rows only — consistent with inverse_design.py
-_ds_synth = dataset[dataset["source"] == "synthetic"]
-MOR_min, MOR_max = float(_ds_synth["MOR_MPa"].min()), float(_ds_synth["MOR_MPa"].max())
-WA_min, WA_max = float(_ds_synth["WA_pct"].min()), float(_ds_synth["WA_pct"].max())
-Shrk_min, Shrk_max = float(_ds_synth["Shrinkage_pct"].min()), float(_ds_synth["Shrinkage_pct"].max())
+# Defensive schema check (mirrors the one inverse_design.py runs at import
+# time). inverse_design is imported above, so its own check has already
+# run against whatever dataset.csv looked like at import time; this local
+# check additionally covers the dataset.csv this script just re-loaded
+# via its own (separately cached) reader, in case the file changed
+# between the two reads within the same session.
+_expected_sources = {"synthetic", "lab_batch", "lab_holdout"}
+_actual_sources = set(dataset["source"].unique())
+if not _actual_sources.issubset(_expected_sources):
+    st.error(
+        f"dataset.csv has unexpected source label(s): "
+        f"{_actual_sources - _expected_sources}. Expected a subset of "
+        f"{_expected_sources}. This usually means generate_dataset.py's "
+        f"source-labelling scheme changed without this app being updated."
+    )
+    st.stop()
+
+# ── Target ranges — single source of truth is inverse_design.py's search
+#    corpus (synthetic + real calibration batches), NOT a locally
+#    recomputed synthetic-only range (see module docstring above).
+_pr = get_property_ranges()
+MOR_min, MOR_max = _pr["MOR_MPa_min"], _pr["MOR_MPa_max"]
+WA_min, WA_max = _pr["WA_pct_min"], _pr["WA_pct_max"]
+Shrk_min, Shrk_max = _pr["Shrinkage_pct_min"], _pr["Shrinkage_pct_max"]
 
 # ── Initialise session state ────────────────────────────────────────────────
 for key in ["res_nn", "res_opt", "res_bay", "trial_vals",
@@ -118,18 +161,30 @@ for key in ["res_nn", "res_opt", "res_bay", "trial_vals",
 # ── Title ────────────────────────────────────────────────────────────────────
 st.title("Ceramic Tile Inverse Composition Design")
 st.caption(
-    "Physics-informed surrogate model trained on 8 experimental batches "
-    "+ 1,000 synthetic samples. AKIJ Ceramics Ltd., Bangladesh."
+    f"Physics-informed surrogate model trained on "
+    f"{meta.get('n_lab_calibration', '?')} experimental calibration "
+    f"batches + {meta.get('n_synthetic', '?')} synthetic samples "
+    f"({meta.get('n_lab_holdout', '?')} additional real batches held out "
+    f"for independent validation, never used in training). "
+    f"AKIJ Ceramics Ltd., Bangladesh."
 )
 
 # ── Model Scope & Limitations ────────────────────────────────────────────────
+_gl = proc_defaults.get("green_length_mm")
+_gw = proc_defaults.get("green_width_mm")
+_press = proc_defaults.get("press_bar")
+_kiln_t = proc_defaults.get("kiln_temp_C")
+_kiln_min = proc_defaults.get("kiln_time_min")
+_green_dim_str = (f"{_gl:.1f} x {_gw:.1f} mm" if _gl is not None and _gw is not None
+                  else "see sidebar")
+
 with st.expander("Model Scope & Limitations (read before use)",
                   expanded=False):
-    st.markdown("""
+    st.markdown(f"""
 **Training scope:** This model was developed for a single homogeneous floor
-tile body at laboratory scale (108 x 54 mm green dimensions, 100 bar pressing
-pressure, 1210 C kiln temperature, 90 min kiln cycle) at AKIJ Ceramics Ltd.,
-Bangladesh.
+tile body at laboratory scale ({_green_dim_str} green dimensions,
+{_press} bar pressing pressure, {_kiln_t} C kiln temperature,
+{_kiln_min} min kiln cycle) at AKIJ Ceramics Ltd., Bangladesh.
 
 **Raw material specificity:** Predictions are calibrated to the chemical and
 physical characteristics of raw materials sourced by AKIJ Ceramics Ltd.
@@ -153,18 +208,27 @@ of interest, while keeping the relevant process parameters fixed. The framework
 should then be re-trained on that facility-specific dataset. Prediction accuracy
 improves proportionally with the volume and representativeness of the real data
 provided.
-
-| Material | Min (wt%) | Max (wt%) |
-|----------|-----------|-----------|
-| AG98 (High Plastic Clay) | 15.0 | 20.0 |
-| AG22 (Low Plastic Clay)  |  2.5 |  4.0 |
-| AG23 (Semi-Plastic Clay) | 10.0 | 15.0 |
-| Soda Feldspar            | 37.0 | 43.0 |
-| Potash Feldspar          | 15.0 | 22.0 |
-| Crushing                 |  2.0 |  3.5 |
-| ETP Clay                 |  2.0 |  3.1 |
-| Sodium Silicate          |  0.5 |  1.5 |
     """)
+
+    # Bounds table generated from metadata.json, not hardcoded — stays in
+    # sync automatically if BOUNDS in generate_dataset.py ever changes.
+    _mat_desc = {
+        "AG98": "AG98 (High Plastic Clay)",
+        "AG22": "AG22 (Low Plastic Clay)",
+        "AG23": "AG23 (Semi-Plastic Clay)",
+        "SodaF": "Soda Feldspar",
+        "PotashF": "Potash Feldspar",
+        "Crushing": "Crushing",
+        "ETP": "ETP Clay",
+        "NaSil": "Sodium Silicate",
+    }
+    bounds_rows = [
+        {"Material": _mat_desc.get(m, m),
+         "Min (wt%)": meta["bounds"][m][0],
+         "Max (wt%)": meta["bounds"][m][1]}
+        for m in materials if m in meta.get("bounds", {})
+    ]
+    st.table(pd.DataFrame(bounds_rows).set_index("Material"))
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SIDEBAR — fixed process parameters + live price/CO2 database status
@@ -172,31 +236,46 @@ provided.
 with st.sidebar:
     st.header("Process Parameters")
     st.caption(
-        "Fixed at the values used during fabrication of the 8 calibration "
-        "batches. Displayed for reproducibility - do not vary."
+        f"Fixed at the values used during fabrication of the "
+        f"{meta.get('n_lab_calibration', '?')} calibration batches. "
+        f"Displayed for reproducibility - do not vary."
     )
-    for label, val in [
-        ("Pressing pressure (bar)", 100),
-        ("Dryer residence time (min)", 45),
-        ("Kiln residence time (min)", 90),
-        ("Kiln temperature (C)", 1210),
-        ("Gas calorific value (Kcal/Nm3)", 8300),
+    for label, key in [
+        ("Pressing pressure (bar)", "press_bar"),
+        ("Dryer residence time (min)", "dryer_time_min"),
+        ("Kiln residence time (min)", "kiln_time_min"),
+        ("Kiln temperature (C)", "kiln_temp_C"),
+        ("Gas calorific value (Kcal/Nm3)", "calorific_NG_Kcal_Nm3"),
     ]:
-        st.number_input(label, value=float(val), disabled=True)
+        val = proc_defaults.get(key)
+        if val is not None:
+            st.number_input(label, value=float(val), disabled=True)
 
     st.divider()
     st.subheader("Typical operating midpoints")
-    for label, val in [
-        ("Dryer temperature (C)", 180.0),
-        ("Green tile length (mm)", 109.20),
-        ("Green tile width (mm)", 54.60),
-        ("Green tile thickness (mm)", 9.80),
-        ("Green tile weight (g)", 98.50),
-        ("Fired tile length (mm)", 98.00),
-        ("Fired tile weight (g)", 95.05),
-        ("Gas consumption (Nm3/m2)", 1.41),
+    for label, key in [
+        ("Dryer temperature (C)", "dryer_temp_C"),
+        ("Green tile length (mm)", "green_length_mm"),
+        ("Green tile width (mm)", "green_width_mm"),
+        ("Green tile thickness (mm)", "green_thickness_mm"),
+        ("Green tile weight (g)", "green_weight_g"),
+        ("Fired tile length (mm)", "fired_length_mm"),
+        ("Fired tile weight (g)", "fired_weight_g"),
+        ("Gas consumption (Nm3/m2)", "gas_Nm3_per_m2"),
     ]:
-        st.number_input(label, value=val, disabled=True)
+        val = proc_defaults.get(key)
+        if val is not None:
+            st.number_input(label, value=float(val), disabled=True)
+
+    st.divider()
+    st.subheader("Forward Model")
+    st.caption(
+        f"Active model: `{FORWARD_MODEL_FILE}`. A real-vs-real+synthetic "
+        f"ablation on the held-out batches is saved at "
+        f"data/ablation_real_vs_synthetic.csv — check it before assuming "
+        f"this is the more accurate of the two saved models for your use "
+        f"case (see inverse_design.py's module docstring)."
+    )
 
     st.divider()
     st.subheader("Raw-Material Price / CO2 Database")
@@ -269,6 +348,26 @@ tabs = st.tabs([
 ])
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
+def _verified_banner(result: dict) -> None:
+    """
+    Surface property_source / is_verified_batch (see inverse_design.py)
+    directly in the UI, so the person reading results knows whether they
+    are looking at an already-fabricated, already-measured recipe or a
+    physics-surrogate-generated candidate that has never been made.
+    """
+    if result.get("is_verified_batch"):
+        st.success(
+            "**Verified batch match.** This composition corresponds to an "
+            "already-fabricated, laboratory-measured recipe. The property "
+            "values shown below are the ACTUAL MEASURED results, not a "
+            "model prediction."
+        )
+    else:
+        st.caption(
+            "Property values shown below are forward-model PREDICTIONS "
+            "for this composition — it has not been physically fabricated."
+        )
+
 def _table(result: dict) -> pd.DataFrame:
     comp_renamed = {MAT_SHORT.get(m, m): v
                     for m, v in result["composition_wtpct"].items()}
@@ -277,6 +376,7 @@ def _table(result: dict) -> pd.DataFrame:
         **{TGT_LABELS.get(k, k): v for k, v in result["predicted"].items()},
         "Cost (Tk/kg)": result["cost_Tk_per_kg"],
         "CO2 (kg/kg)": result["CO2_kg_per_kg"],
+        "Property source": result.get("property_source", "predicted"),
     }])
 
 def _comp_bar(result: dict, title: str, color: str):
@@ -344,8 +444,10 @@ def _error_bars(result: dict, tgt: dict, title: str, color: str):
 with tabs[0]:
     st.markdown(
         "Returns the single dataset sample **closest to the target** in "
-        "scaled property space (equal weight for MOR, WA, and Shrinkage). "
-        "No cost or CO2 consideration. "
+        "scaled property space (equal weight for MOR, WA, and Shrinkage) — "
+        "searched over BOTH physics-surrogate-generated candidates and "
+        "real, already-fabricated calibration batches. No cost or CO2 "
+        "consideration. "
         "This method is a **baseline** - it makes no attempt to minimise "
         "cost or environmental impact."
     )
@@ -360,6 +462,7 @@ with tabs[0]:
         res = st.session_state["res_nn"]
         tgt = st.session_state["tgt_nn"]
         st.markdown("#### Recommended Composition")
+        _verified_banner(res)
         st.dataframe(_table(res), use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
@@ -379,9 +482,10 @@ with tabs[0]:
 # ═══════════════════════════════════════════════════════════════════════════
 with tabs[1]:
     st.markdown(
-        "Searches the **10 nearest neighbours** in scaled property space and "
-        "selects the composition with the lowest combined cost + CO2 rank, "
-        "using the **latest** price/CO2 database. "
+        "Searches the **10 nearest neighbours** — physics-surrogate-"
+        "generated OR real calibration batches — in scaled property space "
+        "and selects the composition with the lowest combined cost + CO2 "
+        "rank, using the **latest** price/CO2 database. "
         "If this returns the same result as the Non-Optimised method, the "
         "10-nearest neighbourhood lacks sufficient compositional diversity "
         "for this target - a known limitation of dataset-lookup inverse design."
@@ -412,6 +516,7 @@ with tabs[1]:
             )
 
         st.markdown("#### Recommended Composition")
+        _verified_banner(res)
         st.dataframe(_table(res), use_container_width=True)
         c1, c2 = st.columns(2)
         with c1:
@@ -436,7 +541,9 @@ with tabs[2]:
         "meeting the target properties, using the **latest** price/CO2 "
         "database. Unlike the nearest-neighbour methods, Bayesian "
         "optimisation can identify compositions not present in the "
-        "dataset, enabling genuinely improved cost and CO2 performance. "
+        "dataset, enabling genuinely improved cost and CO2 performance — "
+        "as a continuous optimiser it always returns a forward-model "
+        "PREDICTION, never an already-fabricated real batch. "
         "More accurate than nearest-neighbour but slower (~10-30 s). "
         "The objective function is dimensionless: cost and CO2 are each "
         "normalised by their dataset range before summation with the "
@@ -524,7 +631,10 @@ with tabs[3]:
     )
     st.info(
         "This tab runs all three methods simultaneously on the same target "
-        "values for a consistent side-by-side comparison."
+        "values for a consistent side-by-side comparison. Methods 1-2 may "
+        "each independently return either a physics-surrogate PREDICTION "
+        "or an already-fabricated, MEASURED real batch — see the "
+        "'Property source' row below."
     )
     n_trials_cmp = st.slider("Bayesian trials (comparison)", 50, 300, 200, 50)
 
@@ -558,6 +668,14 @@ with tabs[3]:
                 "the **same composition**. See Tab 2 for explanation."
             )
 
+        n_verified = sum(1 for r in results.values() if r.get("is_verified_batch"))
+        if n_verified > 0:
+            st.success(
+                f"**{n_verified} of {len(results)} method(s)** returned an "
+                "already-fabricated, laboratory-measured batch for this "
+                "target — see 'Property source' in the table below."
+            )
+
         # ── Comparison table ─────────────────────────────────────────────
         st.subheader("Recommended Compositions")
         cmp_df = pd.DataFrame({
@@ -568,6 +686,7 @@ with tabs[3]:
                    for k, v in res["predicted"].items()},
                 "Cost (Tk/kg)": res["cost_Tk_per_kg"],
                 "CO2 (kg/kg)": res["CO2_kg_per_kg"],
+                "Property source": res.get("property_source", "predicted"),
             }
             for name, res in results.items()
         }).T
@@ -732,4 +851,3 @@ with tabs[3]:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-
